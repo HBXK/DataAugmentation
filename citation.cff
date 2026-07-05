@@ -1,1 +1,7 @@
-
+cff-version: 1.2.0
+author:
+- family-names: "Klinteback"
+  given-names: "Henri"
+title: "DataAugmentation"
+date-released: 2026-07-04
+url: "https://github.com/HBXK/DataAugmentation"
