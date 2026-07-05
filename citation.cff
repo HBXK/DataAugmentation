@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-author:
+authors:
 - family-names: "Klinteback"
   given-names: "Henri"
 title: "DataAugmentation"
