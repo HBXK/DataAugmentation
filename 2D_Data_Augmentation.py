@@ -43,85 +43,23 @@ def points_perturbed_0(N, eps = 100):
 
 
 
-def xgrid(N):
-    return np.arange(2*N)*np.pi/N
 
-def kgrid(N):
-    return np.concatenate((np.arange(N), np.arange(-N,0)))
-
-
-def tensor_xgrid(N, d):
-    axis = xgrid(N)
-    grids = np.meshgrid(*([axis] * d), indexing="ij")   # d arrays
-    return np.stack(grids, axis=-1) 
-
-def fft(F, N, d, degree, valid_powers, upsample=2):
-    n = (N,)*d
-    n = tuple(int(k) for k in n)
-    m = tuple(k * upsample for k in n) 
-    coords = tensor_xgrid(N, d)
-    f_vals = np.asarray(np.apply_along_axis(F, -1, coords, degree, valid_powers))
-    coeffs = fftn(f_vals)
-    if upsample > 1:
-        coeffs = fftshift(coeffs)                       # move k=0 to centre
-        pad_width = [((mj - nj)//2, (mj - nj + 1)//2)
-                     for nj, mj in zip(n, m)]           # symmetric pad
-        coeffs = np.pad(coeffs, pad_width, mode="constant")
-        coeffs = ifftshift(coeffs)                      # back to FFT order
-    interp_vals = ifftn(coeffs) * (upsample ** d)       # rescale amplitudes
-    interp_vals = interp_vals.real                      # f is real‑valued
-    axis_fine = [np.linspace(-np.pi, np.pi, k)
-                 for k in m]
-    coords_fine = np.meshgrid(*axis_fine, indexing="ij")
-
-    return interp_vals, coords_fine
-
-
-def gram_matrix(N, points):
-
-    gram_matrices = np.zeros((N, 3, 3))
-
-    for i in range(N):
-        angles = points[i]
-        for j in range(3):
-            for k in range(3):
-                gram_matrices[i, j, k] = np.cos(angles[j] - angles[k])
-
-    return gram_matrices
-
-
-def matrix_exponential_diagonalization(G):
-
-    eigenvalues, eigenvectors = eigh(G)  # Compute eigenvalues and eigenvectors
-    exp_diag = np.diag(np.exp(eigenvalues))  # Exponential of the eigenvalues
-    return exp_diag   # Reconstruct the exponential
-
-
-def f(N, Gs):
-    traces = np.zeros(N)
-    for i in range(N):
-        exp_G = matrix_exponential_diagonalization(Gs[i])
-        traces[i] = np.trace(exp_G)
-    return traces
-
-
-
-def F(thetas, degree, valid_powers, alpha = 2):
+def F(thetas, valid_powers, alpha = 2):
+    '''
+    efficiently evaluates the target polynomial given a list of rotation invariant basis polynoials (array: valid powers)
+    '''
     valid_powers = np.array(valid_powers)
-    # ck = np.zeros((len(valid_powers),))
-    # i=0
-    # for k in valid_powers:
-    #     ck[i] = rng[i]*np.exp(-alpha*sum(abs(ki) for ki in k))
-    #     i+=1
-    # z = np.exp(1j*thetas)
-    # return sum(ck[i]*np.cos(np.prod(z**valid_powers[i])) for i in range(len(valid_powers)))
+
     ck = rng[:len(valid_powers)] * np.exp(-alpha * np.linalg.norm(valid_powers, axis=1))
     phase = valid_powers @ thetas  # shape: (|K|,) because (|K|,3) @ (3,) => (|K|,)
     complex_exps = np.exp(1j * phase)  # shape (|K|,)
     cos_terms = complex_exps.real
     return np.sum(ck * cos_terms)
 
-def F_trunc(thetas, degree, valid_powersF, valid_powers, alpha = 2):
+def F_trunc(thetas, valid_powersF, valid_powers, alpha = 2):
+    '''
+    Computes the L2 orthogonal onto a sub basis whose elements are given by array: valid_powersF
+    '''
     valid_powers = np.array(valid_powers)
     valid_powersF = np.array(valid_powersF)
     mask = np.isin(valid_powersF, valid_powers).astype(int)
@@ -129,13 +67,7 @@ def F_trunc(thetas, degree, valid_powersF, valid_powers, alpha = 2):
     for i in range(len(mask)):
         if np.all(mask[i]==np.array([1,1,1])):
             indecatrix[i] = 1
-    # ck = np.zeros((len(valid_powers),))
-    # i=0
-    # for k in valid_powers:
-    #     ck[i] = rng[i]*np.exp(-alpha*sum(abs(ki) for ki in k))
-    #     i+=1
-    # z = np.exp(1j*thetas)
-    # return sum(ck[i]*np.cos(np.prod(z**valid_powers[i])) for i in range(len(valid_powers)))
+
     ck = rng[:len(valid_powersF)] * np.exp(-alpha * np.linalg.norm(valid_powersF, axis=1))*indecatrix
     phase = valid_powersF @ thetas  # shape: (|K|,) because (|K|,3) @ (3,) => (|K|,)
     complex_exps = np.exp(1j * phase)  # shape (|K|,)
@@ -143,14 +75,14 @@ def F_trunc(thetas, degree, valid_powersF, valid_powers, alpha = 2):
     return np.sum(ck * cos_terms)
 
 def design_matrix_unit_circle(thetas, N, valid_powers):
-
-    # Ensure thetas is a numpy array
+    '''
+    computes the augmented design matrix (concatenation off the unaugmented design matrix) for a quadrature rule of degree N
+    '''
     thetas = np.asarray(thetas)
 
     if thetas.shape[1] != 3:
         raise ValueError("The input angles must have shape (N, 3) for groups of three angles.")
 
-    # Generate all possible combinations of (k1, k2, k3) with sum(|k1| + |k2| + |k3|) == degree
     z = np.exp(1j * thetas)
     valid_powers = np.array(valid_powers)
     # Compute each term in the polynomial using broadcasting
@@ -158,18 +90,6 @@ def design_matrix_unit_circle(thetas, N, valid_powers):
 
     if N == 1:
         return design_matrix
-    # Augment the data with rotations by 2*pi/k for k = 1, ..., degree
-    # augmented_matrix = []
-    # for k in range(1, degree + 1):
-    #     rotation = 2 * np.pi*k / (degree+1)
-    #     for group in thetas:
-    #         rotated_group = group + rotation  # Apply the rotation
-    #         z = np.exp(1j * rotated_group)  # Compute z = e^(i * (theta + rotation))
-    #         row = [np.prod(z**k) for k in valid_powers]  # Compute each term in the polynomial
-    #         augmented_matrix.append(row)
-
-    # # Combine original and augmented matrices
-    # design_matrix = np.vstack([design_matrix, augmented_matrix])
     
     k_values = np.arange(N)[:, None, None]
     rotations = 2 * np.pi * k_values / (N)
@@ -183,72 +103,30 @@ def design_matrix_unit_circle(thetas, N, valid_powers):
 
 
 
-def design_matrix_orig(thetas, degree, valid_powers):
-
-    # Ensure thetas is a numpy array
+def design_matrix_orig(thetas, valid_powers):
+    '''
+    Unaugmented design matrix /// used in the code for rotation invariant basis
+    '''
     thetas = np.asarray(thetas)
 
     if thetas.shape[1] != 3:
         raise ValueError("The input angles must have shape (N, 3) for groups of three angles.")
 
-    # Generate all possible combinations of (k1, k2, k3) with sum(|k1| + |k2| + |k3|) == degree
-    #modified for invariant representation
-    valid_powers = np.array(valid_powers)
-    # Compute the design matrix
-    z = np.exp(1j * thetas)
-    # perm_indices = np.array(list(permutations([0, 1, 2])))  # shape (6, 3)
 
-    # thetas_perm = thetas[:, None, :]  # shape (N, 1, 3)
-    # thetas_permuted = np.take_along_axis(thetas_perm, perm_indices[None, :, :], axis=2)  # shape (N, 6, 3)
-    # z = np.sum(np.exp(1j * thetas_permuted), axis=1)
+    valid_powers = np.array(valid_powers)
+    z = np.exp(1j * thetas)
+
     design_matrix = np.prod(z[:, None, :] ** valid_powers[None, :, :], axis=2)
     return np.array(design_matrix)
 
-# def design_matrix_orig(thetas, degree, valid_powers):
-#     thetas = np.asarray(thetas)
-
-#     if thetas.shape[1] != 3:
-#         raise ValueError("The input angles must have shape (N, 3)")
-
-#     valid_powers = np.array(valid_powers)  # shape (M, 3)
-#     N, M = thetas.shape[0], valid_powers.shape[0]
-
-#     # All 6 permutations of [0, 1, 2]
-#     perm_indices = np.array(list(permutations([0, 1, 2])))  # shape (6, 3)
-
-#     # Step 1: Permute thetas → shape (N, 6, 3)
-#     thetas_exp = thetas[:, None, :]
-#     thetas_permuted = np.take_along_axis(thetas_exp, perm_indices[None, :, :], axis=2)
-
-#     # Step 2: Expand to (N, 6, M, 3) to broadcast with valid powers
-#     thetas_perm_expanded = thetas_permuted[:, :, None, :]  # (N, 6, 1, 3)
-#     powers_expanded = valid_powers[None, None, :, :]       # (1, 1, M, 3)
-
-#     # Step 3: Safely compute powered values
-#     # Avoid invalid values for 0 ** negative by masking
-#     with np.errstate(divide='ignore', invalid='ignore'):
-#         # Compute elementwise: theta^k only where valid
-#         powered = np.where(
-#             (thetas_perm_expanded == 0) & (powers_expanded < 0),
-#             0.0,  # Placeholder value; will get masked in final product
-#             thetas_perm_expanded ** powers_expanded
-#         )
-
-#     # Step 4: Exponentiation
-#     exp_term = np.exp(1j * powered)  # shape (N, 6, M, 3)
-
-#     # Step 5: Product across 3 variables, then sum over permutations
-#     term_product = np.prod(exp_term, axis=3)  # (N, 6, M)
-#     design_matrix = np.sum(term_product, axis=1)  # (N, M)
-
-#     return design_matrix
 
 
 
 
-
-def design_matrix_full(thetas, degree, valid_powers):
-
+def design_matrix_full(thetas, valid_powers):
+    '''
+    Unaugmented design matrix /// used in the code for full basis
+    '''
     # Ensure thetas is a numpy array
     thetas = np.asarray(thetas)
 
@@ -257,13 +135,7 @@ def design_matrix_full(thetas, degree, valid_powers):
     
     valid_powers = np.array(valid_powers)
     
-    # Generate all possible combinations of (k1, k2, k3) with sum(|k1| + |k2| + |k3|) == degree
-    # valid_powers = [k for k in product(range(-degree, degree + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree]
-    # perm = np.array(list(permutations(thetas)))
-
-    # Compute z = e^(i * theta) for all groups at once
     z = np.exp(1j * thetas)
-    perm_indices = np.array(list(permutations([0, 1, 2])))  # shape (6, 3)
 
     
     # Compute each term in the polynomial using broadcasting
@@ -271,7 +143,10 @@ def design_matrix_full(thetas, degree, valid_powers):
 
     return np.array(design_matrix)
 
-def design_matrix_proj(thetas, degree, valid_powers):
+def design_matrix_proj(thetas, valid_powers):
+    '''
+    Computes the design matrix for a polynomial subspace /// all terms of to high degree are set to 0.
+    '''
     thetas = np.asarray(thetas)
 
     if thetas.shape[1] != 3:
@@ -295,58 +170,19 @@ def design_matrix_proj(thetas, degree, valid_powers):
 
 
 
-# def design_matrix_full(thetas, degree, valid_powers):
-#     thetas = np.asarray(thetas)
-
-#     if thetas.shape[1] != 3:
-#         raise ValueError("The input angles must have shape (N, 3)")
-
-#     valid_powers = np.array(valid_powers)  # shape (M, 3)
-#     N, M = thetas.shape[0], valid_powers.shape[0]
-
-#     # All 6 permutations of [0, 1, 2]
-#     perm_indices = np.array(list(permutations([0, 1, 2])))  # shape (6, 3)
-
-#     # Step 1: Permute thetas → shape (N, 6, 3)
-#     thetas_exp = thetas[:, None, :]
-#     thetas_permuted = np.take_along_axis(thetas_exp, perm_indices[None, :, :], axis=2)
-
-#     # Step 2: Expand to (N, 6, M, 3) to broadcast with valid powers
-#     thetas_perm_expanded = thetas_permuted[:, :, None, :]  # (N, 6, 1, 3)
-#     powers_expanded = valid_powers[None, None, :, :]       # (1, 1, M, 3)
-
-#     # Step 3: Safely compute powered values
-#     # Avoid invalid values for 0 ** negative by masking
-#     with np.errstate(divide='ignore', invalid='ignore'):
-#         # Compute elementwise: theta^k only where valid
-#         powered = np.where(
-#             (thetas_perm_expanded == 0) & (powers_expanded < 0),
-#             0.0,  # Placeholder value; will get masked in final product
-#             thetas_perm_expanded ** powers_expanded
-#         )
-
-#     # Step 4: Exponentiation
-#     exp_term = np.exp(1j * powered)  # shape (N, 6, M, 3)
-
-#     # Step 5: Product across 3 variables, then sum over permutations
-#     term_product = np.prod(exp_term, axis=3)  # (N, 6, M)
-#     design_matrix = np.sum(term_product, axis=1)  # (N, M)
-
-#     return design_matrix
 
 
-
-
-
-def design_matrix_MC(thetas, degree, nb, valid_powers):
-
+def design_matrix_MC(thetas, nb, valid_powers):
+    '''
+    Design matrix for a random augmentation
+    
+    '''
     # Ensure thetas is a numpy array
     thetas = np.asarray(thetas)
 
     if thetas.shape[1] != 3:
         raise ValueError("The input angles must have shape (N, 3) for groups of three angles.")
 
-    # Generate all possible combinations of (k1, k2, k3) with sum(|k1| + |k2| + |k3|) == degree
     valid_powers = np.array(valid_powers)
     z = np.exp(1j * thetas)
 
@@ -394,17 +230,13 @@ def least_square(X,y, tol = 0):
 
 def least_squares_qr(X, y):
 
-    # Perform full QR decomposition of X
     Q, R_full = np.linalg.qr(X, mode='complete')
 
-    # Extract the upper triangular part R (n x n)
     n = X.shape[0]
     R = R_full[::, :n]  # Take only the first n rows of R_full
 
-    # Compute Q^T * y
     QTy = np.dot(Q.T, y)
     
-    # Solve R * beta = QTy_relevant
     beta = np.linalg.solve(R, QTy)
     
     return beta
@@ -412,7 +244,7 @@ def least_squares_qr(X, y):
 
 
 
-def evaluate_polynomial(theta1, theta2, theta3, coefficients, degree, valid_powers):
+def evaluate_polynomial(theta1, theta2, theta3, coefficients, valid_powers):
 
     # Compute z = e^(i * theta) for the input angles
     z = np.exp(1j * np.array([theta1, theta2, theta3]))
@@ -427,7 +259,7 @@ def evaluate_polynomial(theta1, theta2, theta3, coefficients, degree, valid_powe
 
     return value
 
-def eval_poly_invar(theta1, theta2, theta3, coefficients, degree, valid_powers):
+def eval_poly_invar(theta1, theta2, theta3, coefficients, valid_powers):
     # Compute z = e^(i * theta) for the input angles
     z = np.exp(1j * np.array([theta1, theta2, theta3]))
 
@@ -452,24 +284,6 @@ def psym(theta1,theta2,theta3, coefficients, degree, valid_powers):
         rotated_theta3 = theta3 + rotation
 
         rotated_value = evaluate_polynomial(rotated_theta1, rotated_theta2, rotated_theta3, coefficients, degree, valid_powers)
-
-        sym_value += rotated_value
-
-    sym_value /= degree
-
-    return sym_value
-
-def psym_MC(theta1, theta2, theta3, coefficients, degree, nb):
-
-    sym_value = 0
-    for k in range(nb):
-        rotation = rotations[k]
-
-        rotated_theta1 = theta1 + rotation
-        rotated_theta2 = theta2 + rotation
-        rotated_theta3 = theta3 + rotation
-
-        rotated_value = evaluate_polynomial(rotated_theta1, rotated_theta2, rotated_theta3, coefficients, degree)
 
         sym_value += rotated_value
 
@@ -516,13 +330,13 @@ def compute_max_difference(N, degree, nb):
 rng = np.random.uniform(-1,1, size=(50000,))
 
 
-# Poly Truncation vs High data LSQ
+# Fitting Error
 
 if __name__!= "__main__":
-
+    n_test = 1000
     degrees = [i for i in range(3,16, 3)]
     degreeF = 30
-    test_points = points_circle(15)
+    test_points = points_circle(n_test)
     best_invar_lsq = []
     best_full_lsq = []
     truncation_error  = []
@@ -545,21 +359,21 @@ if __name__!= "__main__":
 
         DM_test = design_matrix_proj(test_points, degree, valid_powers_full)
 
-        X_invar = design_matrix_orig(thetas, degree, valid_powers_invar)
-        X_full = design_matrix_full(thetas, degree, valid_powers_full)
+        X_invar = design_matrix_orig(thetas, valid_powers_invar)
+        X_full = design_matrix_full(thetas, valid_powers_full)
         coeff_full = np.linalg.lstsq(X_full, y_target, rcond=10**-4.5)[0]
         coeff_invar = np.linalg.lstsq(X_invar, y_target, rcond=10**-4.5)[0]
         poly_values_invar =[] 
         poly_values_full = []
         for theta1, theta2, theta3 in test_points:
-            poly_values_invar.append(eval_poly_invar(theta1, theta2, theta3, coeff_invar, degree, valid_powers_invar))
-            poly_values_full.append(evaluate_polynomial(theta1, theta2, theta3, coeff_full, degree, valid_powers_full))
-        y_truncation = np.apply_along_axis(F_trunc, 1, test_points, degree, valid_powersF, valid_powers_invar)
-        y_test = np.apply_along_axis(F, 1, test_points, degreeF, valid_powersF)
-        truncation_error.append(1/np.sqrt(15)*np.linalg.norm(y_truncation-y_test))
-        best_invar_lsq.append(1/np.sqrt(15)*np.linalg.norm(poly_values_invar-y_test))
-        best_full_lsq.append(1/np.sqrt(15)*np.linalg.norm(poly_values_full-y_test))
-        proj_error.append(1/np.sqrt(15)*np.linalg.norm(DM_test @ coeff_full-y_test))
+            poly_values_invar.append(eval_poly_invar(theta1, theta2, theta3, coeff_invar, valid_powers_invar))
+            poly_values_full.append(evaluate_polynomial(theta1, theta2, theta3, coeff_full, valid_powers_full))
+        y_truncation = np.apply_along_axis(F_trunc, 1, test_points, valid_powersF, valid_powers_invar)
+        y_test = np.apply_along_axis(F, 1, test_points, valid_powersF)
+        truncation_error.append(1/np.sqrt(n_test)*np.linalg.norm(y_truncation-y_test))
+        best_invar_lsq.append(1/np.sqrt(n_test)*np.linalg.norm(poly_values_invar-y_test))
+        best_full_lsq.append(1/np.sqrt(n_test)*np.linalg.norm(poly_values_full-y_test))
+        proj_error.append(1/np.sqrt(n_test15)*np.linalg.norm(DM_test @ coeff_full-y_test))
 
         # plt.plot([i for i in range(10,1520,100)], max_differences, marker="o", label=f'{degree}')
     plt.plot(degrees, best_invar_lsq, marker="o", label='LSQ for invariant basis')
@@ -575,7 +389,7 @@ if __name__!= "__main__":
 
 
 
-# Find sigma_min
+# Find sigma_min (best regularisation)
 
 
 if __name__!= "__main__":
@@ -587,7 +401,8 @@ if __name__!= "__main__":
     plt.xscale("log")
     degree = 4
     degreeF = 30
-    test_points = points_circle(20)
+    n_test = 1000
+    test_points = points_circle(n_test)
     best_invar_lsq = []
     best_full_lsq = []
     truncation_error  = []
@@ -596,10 +411,10 @@ if __name__!= "__main__":
     tols = 10**(np.array([-2,-2.5,-3,-3.5,-4, -4.5,-5,-5.5,-6,-6.5,-7,-7.5,-8,-8.5]))
     thetas = points_perturbed_0(N)
     valid_powersF = [k for k in product(range(-degreeF, degreeF + 1), repeat=3) if sum(abs(ki) for ki in k) <= degreeF  and sum(ki for ki in k)==0]
-    y_target = np.apply_along_axis(F, 1, thetas, degreeF, valid_powersF)
+    y_target = np.apply_along_axis(F, 1, thetas, valid_powersF)
     valid_powers_full = [k for k in product(range(-degree, degree + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree]
-    y_test = np.apply_along_axis(F, 1, test_points, degreeF, valid_powersF)
-    X_full = design_matrix_full(thetas, degree, valid_powers_full)
+    y_test = np.apply_along_axis(F, 1, test_points, valid_powersF)
+    X_full = design_matrix_full(thetas, valid_powers_full)
     for tol in tqdm(tols):
         max_differences = []
 
@@ -607,8 +422,8 @@ if __name__!= "__main__":
         coeff_full = np.linalg.lstsq(X_full, y_target, tol)[0]
         poly_values_full = []
         for theta1, theta2, theta3 in test_points:
-            poly_values_full.append(evaluate_polynomial(theta1, theta2, theta3, coeff_full, degree, valid_powers_full))
-        best_full_lsq.append(1/np.sqrt(20)*np.linalg.norm(poly_values_full-y_test))
+            poly_values_full.append(evaluate_polynomial(theta1, theta2, theta3, coeff_full, valid_powers_full))
+        best_full_lsq.append(1/np.sqrt(n_test)*np.linalg.norm(poly_values_full-y_test))
 
         # plt.plot([i for i in range(10,1520,100)], max_differences, marker="o", label=f'{degree}')
     plt.plot(tols, best_full_lsq, marker="o", label='LSQ for varying sigma_min')
@@ -619,17 +434,9 @@ if __name__!= "__main__":
     plt.show()
 
 
-# Quality of Approximation with rotated data
 
 
-
-
-
-
-
-
-
-# Augment v Augment + proj
+# Augment v Augment + projection
 
 if __name__!= "__main__":
     plt.figure()
@@ -639,28 +446,28 @@ if __name__!= "__main__":
     plt.ylabel("L2 Error")
     degree = 7
     degreeF = 30
-    test_points = points_circle(15)
+    test_points = points_circle(1000)
     quad_simple = []
     quad_proj = []
     MC_simple  = []
     MC_proj = []
     invar = []
     # tol = -1
-    thetas = points_fix_0(50)
+    thetas = points_fix_0(5000)
     valid_powers = [k for k in product(range(-degree, degree + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree]
 
     valid_powersF = [k for k in product(range(-degreeF, degreeF + 1), repeat=3) if sum(abs(ki) for ki in k) <= degreeF  and sum(ki for ki in k)==0]
-    DM_test = design_matrix_proj(test_points, degree, valid_powers)
+    DM_test = design_matrix_proj(test_points, valid_powers)
     valid_powers_invar = [k for k in product(range(-degree, degree + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree and sum(ki for ki in k)==0]
 
     for N in tqdm([1,3,5,7,9,12]):
         max_differences = []
 
 
-        X_invar = design_matrix_orig(thetas, degree, valid_powers_invar)
+        X_invar = design_matrix_orig(thetas, valid_powers_invar)
         X_quad = design_matrix_unit_circle(thetas, N, valid_powers)
-        X_MC = design_matrix_MC(thetas, degree, N, valid_powers)       
-        y_target = np.apply_along_axis(F, 1, thetas, degreeF, valid_powersF)
+        X_MC = design_matrix_MC(thetas, N, valid_powers)       
+        y_target = np.apply_along_axis(F, 1, thetas, valid_powersF)
         coeff_invar = least_square(X_invar, y_target)
 
         y_target = augment_target_values(y_target, N)
@@ -671,15 +478,15 @@ if __name__!= "__main__":
         poly_values_quad = []
         poly_values_MC = []
         for theta1, theta2, theta3 in test_points:
-            poly_values_invar.append(eval_poly_invar(theta1, theta2, theta3, coeff_invar, degree, valid_powers_invar))
-            poly_values_quad.append(evaluate_polynomial(theta1, theta2, theta3, coeff_quad, degree, valid_powers))
-            poly_values_MC.append(evaluate_polynomial(theta1, theta2, theta3, coeff_MC, degree, valid_powers))
-        y_test = np.apply_along_axis(F, 1, test_points, degreeF, valid_powersF)
-        invar.append(1/np.sqrt(15)*np.linalg.norm(poly_values_invar-y_test))
-        quad_simple.append(1/np.sqrt(15)*np.linalg.norm(poly_values_quad-y_test))
-        quad_proj.append(1/np.sqrt(15)*np.linalg.norm(DM_test @ coeff_quad-y_test))
-        MC_simple.append(1/np.sqrt(15)*np.linalg.norm(poly_values_MC-y_test))
-        MC_proj.append(1/np.sqrt(15)*np.linalg.norm(DM_test @ coeff_MC-y_test))
+            poly_values_invar.append(eval_poly_invar(theta1, theta2, theta3, coeff_invar, valid_powers_invar))
+            poly_values_quad.append(evaluate_polynomial(theta1, theta2, theta3, coeff_quad, valid_powers))
+            poly_values_MC.append(evaluate_polynomial(theta1, theta2, theta3, coeff_MC, valid_powers))
+        y_test = np.apply_along_axis(F, 1, test_points, valid_powersF)
+        invar.append(1/np.sqrt(1000)*np.linalg.norm(poly_values_invar-y_test))
+        quad_simple.append(1/np.sqrt(1000)*np.linalg.norm(poly_values_quad-y_test))
+        quad_proj.append(1/np.sqrt(1000)*np.linalg.norm(DM_test @ coeff_quad-y_test))
+        MC_simple.append(1/np.sqrt(1000)*np.linalg.norm(poly_values_MC-y_test))
+        MC_proj.append(1/np.sqrt(1000)*np.linalg.norm(DM_test @ coeff_MC-y_test))
 
     plt.plot([1,3,5,7,9,12], quad_simple, marker="o", label='Quad')
     plt.plot([1,3,5,7,9,12], quad_proj, marker="o", label='Quad+proj')
@@ -691,100 +498,6 @@ if __name__!= "__main__":
     plt.legend()
     plt.grid()
     plt.show()
-
-
-if __name__!= "__main__":
-    plt.figure()
-    plt.yscale("log")
-    plt.xscale("log")
-
-    plt.title("Fitting error with quadrature augmentation, L=3, D3")
-    plt.xlabel("Nb of Rotation")
-    plt.ylabel("L2 Error")
-    degree = 3
-    degreeF = 30
-    test_points = points_circle(15)
-    quad_simple = []
-    quad_proj = []
-    MC_simple  = []
-    MC_proj = []
-    # tol = -1
-    thetas = points_perturbed_0(100)
-    valid_powers = [k for k in product(range(-degree, degree + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree]
-    valid_powersF = [k for k in product(range(-degreeF, degreeF + 1), repeat=3) if sum(abs(ki) for ki in k) <= degreeF  and sum(ki for ki in k)==0]
-    y_test = np.apply_along_axis(F, 1, test_points, degreeF, valid_powersF)
-
-    y_target = np.apply_along_axis(F, 1, thetas, degreeF, valid_powersF)
-
-    DM_test = design_matrix_proj(test_points, degree, valid_powers)
-    valid_powers_invar = [k for k in product(range(-degree, degree + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree and sum(ki for ki in k)==0]
-    rotn = np.array([1,2,4,6,8,10,12,15,20,40,70,100])
-    X_invar = design_matrix_orig(thetas, degree, valid_powers_invar)
-    coeff_invar = least_square(X_invar, y_target)[0]
-    poly_values_invar =[] 
-
-    for theta1, theta2, theta3 in test_points:
-        poly_values_invar.append(eval_poly_invar(theta1, theta2, theta3, coeff_invar, degree, valid_powers_invar))
-    invar = (1/np.sqrt(15)*np.linalg.norm(poly_values_invar-y_test))
-
-    for N in tqdm(rotn):
-        max_differences = []
-
-
-        X_quad = design_matrix_unit_circle(thetas, N, valid_powers)
-        X_MC = design_matrix_MC(thetas, degree, N, valid_powers)       
-        y_target = np.apply_along_axis(F, 1, thetas, degreeF, valid_powersF)
-
-        y_target = augment_target_values(y_target, N)
-
-        coeff_quad = least_square(X_quad, y_target, tol=10**-4.5)
-        coeff_MC = least_square(X_MC, y_target, tol=10**-4.5)
-        poly_values_quad = []
-        poly_values_MC = []
-        for theta1, theta2, theta3 in test_points:
-            poly_values_quad.append(evaluate_polynomial(theta1, theta2, theta3, coeff_quad, degree, valid_powers))
-            poly_values_MC.append(evaluate_polynomial(theta1, theta2, theta3, coeff_MC, degree, valid_powers))
-        quad_simple.append(1/np.sqrt(15)*np.linalg.norm(poly_values_quad-y_test))
-        quad_proj.append(1/np.sqrt(15)*np.linalg.norm(DM_test @ coeff_quad-y_test))
-        MC_simple.append(1/np.sqrt(15)*np.linalg.norm(poly_values_MC-y_test))
-        MC_proj.append(1/np.sqrt(15)*np.linalg.norm(DM_test @ coeff_MC-y_test))
-
-
-    plt.plot (rotn, [invar for i in rotn], linestyle = '--', label = f'Invar')
-    plt.plot(rotn, quad_simple, marker="o", label='Quad')
-    plt.plot(rotn, quad_proj, marker="o", label='Quad+proj')
-    plt.plot(rotn, MC_simple, marker="o", label='MC')
-    plt.plot(rotn, MC_proj, marker="o", label='MC+proj')    
-    # plt.plot(rotn, invar, marker="o", label='Invariant')
-
-    # plt.plot(degrees, np.exp(-0.40832958*np.array(degrees)), label=f'Exp fit')
-    plt.legend()
-    plt.grid()
-    plt.show()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # Different Psym
@@ -814,7 +527,7 @@ if __name__!= "__main__":
             # poly_MC = []
             X_quad = design_matrix_unit_circle(thetas, N, valid_powers)
             # X_MC = design_matrix_MC(thetas, degree, N, valid_powers)
-            y = np.apply_along_axis(F, 1, thetas, degreeF, valid_powersF)
+            y = np.apply_along_axis(F, 1, thetas, valid_powersF)
             y = augment_target_values(y, N)
             # for theta in thetas:
             #     y.append(F(theta, degreeF))
@@ -823,10 +536,10 @@ if __name__!= "__main__":
             # coeff_MC = least_square(X_MC, y)[0]
             max_difference = 0
             for theta1, theta2, theta3 in test_points:
-                psym_quad.append(psym(theta1, theta2, theta3, coeff_quad, degree, valid_powers))
-                poly_quad.append(evaluate_polynomial(theta1, theta2, theta3, coeff_quad, degree, valid_powers))
-                # psym_MC_error.append(psym(theta1, theta2, theta3, coeff_MC, degree, valid_powers))
-                # poly_MC.append(evaluate_polynomial(theta1, theta2, theta3, coeff_MC, degree, valid_powers))
+                psym_quad.append(psym(theta1, theta2, theta3, coeff_quad, valid_powers))
+                poly_quad.append(evaluate_polynomial(theta1, theta2, theta3, coeff_quad, valid_powers))
+                # psym_MC_error.append(psym(theta1, theta2, theta3, coeff_MC, valid_powers))
+                # poly_MC.append(evaluate_polynomial(theta1, theta2, theta3, coeff_MC, valid_powers))
             psym_quad = np.array(psym_quad)
             poly_quad = np.array(poly_quad)
             # psym_MC_error = np.array(psym_MC_error)
@@ -848,7 +561,7 @@ if __name__!= "__main__":
     degreeF = 30
     test_points = points_circle(15)
     valid_powersF = [k for k in product(range(-degreeF, degreeF + 1), repeat=3) if sum(abs(ki) for ki in k) <= degreeF  and sum(ki for ki in k)==0]
-    target = np.apply_along_axis(F, 1, test_points, degreeF, valid_powersF)
+    target = np.apply_along_axis(F, 1, test_points, valid_powersF)
     
 
 
@@ -858,15 +571,15 @@ if __name__!= "__main__":
         quad_l2 = []
         MC_l2 = []
         valid_powers = [k for k in product(range(-degree, degree + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree]
-        DM_proj = design_matrix_proj(test_points, degree, valid_powers)
+        DM_proj = design_matrix_proj(test_points, valid_powers)
 
         for N in tqdm([k for k in range(1,21,1)]):
             tol = 10**-4.5
             poly_quad = []
             poly_MC = []
             X_quad = design_matrix_unit_circle(thetas, N, valid_powers)
-            X_MC = design_matrix_MC(thetas, degree, N, valid_powers)
-            y = np.apply_along_axis(F, 1, thetas, degreeF, valid_powersF)
+            X_MC = design_matrix_MC(thetas, N, valid_powers)
+            y = np.apply_along_axis(F, 1, thetas, valid_powersF)
             y = augment_target_values(y, N)
             # for theta in thetas:
             #     y.append(F(theta, degreeF))
@@ -877,8 +590,8 @@ if __name__!= "__main__":
             poly_MC = DM_proj @ coeff_MC
             # max_difference = 0
             # for theta1, theta2, theta3 in test_points:
-            #     poly_quad.append(evaluate_polynomial(theta1, theta2, theta3, coeff_quad, degree, valid_powers))
-            #     poly_MC.append(evaluate_polynomial(theta1, theta2, theta3, coeff_MC, degree, valid_powers))
+            #     poly_quad.append(evaluate_polynomial(theta1, theta2, theta3, coeff_quad, valid_powers))
+            #     poly_MC.append(evaluate_polynomial(theta1, theta2, theta3, coeff_MC, valid_powers))
             # poly_quad = np.array(poly_quad)
             # poly_MC = np.array(poly_MC)
             quad_l2.append(1/(15)*np.linalg.norm(target-poly_quad))
@@ -892,42 +605,6 @@ if __name__!= "__main__":
     plt.show()
 
 
-# More data half slope
-if __name__ != "__main__":
-    plt.figure()
-    plt.yscale("log")
-    plt.xscale("log")
-    plt.title("MC (2D, )")
-    plt.xlabel("Data points")
-    plt.ylabel("||f-sym f||")
-    degrees = [3,6,9]
-    degreeF = 15
-    test_points = points_circle(15, 3)
-    standard_approx = []
-    best = []
-    valid_powersF = [k for k in product(range(-degreeF, degreeF + 1), repeat=3) if sum(abs(ki) for ki in k) <= degreeF  and sum(ki for ki in k)==0]
-    for degree in degrees:
-        max_differences = []
-        valid_powers = [k for k in product(range(-degree, degree + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree]
-        for N in tqdm([k for k in range(1000, 11000,1000)]):
-            
-            thetas = points_von_mises(N, 3)
-            X = design_matrix_full(thetas, degree, valid_powers)
-            y = np.apply_along_axis(F, 1, thetas, degreeF, valid_powersF)
-
-            coeff = least_square(X, y)
-            poly_values =[] 
-            psym_MC_error = []
-
-            for theta1, theta2, theta3 in test_points:
-                poly_values.append(evaluate_polynomial(theta1, theta2, theta3, coeff, degree, valid_powers))
-                psym_MC_error.append(psym(theta1, theta2, theta3, coeff, degree, valid_powers))
-
-            max_differences.append(1/np.sqrt(15)*np.linalg.norm(np.array(poly_values)-np.array(psym_MC_error)))
-        plt.plot([k for k in range(1000, 11000,1000)], max_differences, marker = "o", label = f'f-sym f, degree : {degree}')
-    plt.legend()
-    plt.grid()
-    plt.show()
 
 
 # MC data augmentation
@@ -990,16 +667,16 @@ if __name__ == "__main__":
                 valid_powers = [k for k in product(range(-degree, degree + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree]
                 for N in tqdm(rots):
                 
-                    X = design_matrix_MC(thetas, degree, N, valid_powers)
-                    y = np.apply_along_axis(F, 1, thetas, degreeF, valid_powersF)
+                    X = design_matrix_MC(thetas, N, valid_powers)
+                    y = np.apply_along_axis(F, 1, thetas, valid_powersF)
                     y = augment_target_values(y, N)
                     coeff = np.linalg.lstsq(X, y)[0]
                     poly_values =[] 
                     psym_MC_error = []
     
                     for theta1, theta2, theta3 in test_points:
-                        poly_values.append(evaluate_polynomial(theta1, theta2, theta3, coeff, degree, valid_powers))
-                        psym_MC_error.append(psym(theta1, theta2, theta3, coeff, degree, valid_powers))
+                        poly_values.append(evaluate_polynomial(theta1, theta2, theta3, coeff, valid_powers))
+                        psym_MC_error.append(psym(theta1, theta2, theta3, coeff, valid_powers))
     
                     max_differences.append(1/np.sqrt(15)*np.linalg.norm(np.array(poly_values)-np.array(psym_MC_error)))
                 all_psyms[i,a] = max_differences
@@ -1021,19 +698,13 @@ if __name__ == "__main__":
         plt.grid()
         plt.show()
 
-
-
-# Conservation of angular momentum
+##############################################################################################################################################################################################################################
+############# Conservation of angular momentum
+##############################################################################################################################################################################################################################
 
 def F_perturbed(thetas, degree, valid_powers, epsilon, alpha = 2):
     valid_powers = np.array(valid_powers)
-    # ck = np.zeros((len(valid_powers),))
-    # i=0
-    # for k in valid_powers:
-    #     ck[i] = rng[i]*np.exp(-alpha*sum(abs(ki) for ki in k))
-    #     i+=1
-    # z = np.exp(1j*thetas)
-    # return sum(ck[i]*np.cos(np.prod(z**valid_powers[i])) for i in range(len(valid_powers)))
+
     ck = rng[:len(valid_powers)] * np.exp(-alpha * np.linalg.norm(valid_powers, axis=1))
     phase = valid_powers @ thetas  # shape: (|K|,) because (|K|,3) @ (3,) => (|K|,)
     complex_exps = np.exp(1j * phase)  # shape (|K|,)
@@ -1054,37 +725,23 @@ def psym_perturbed(thetas, degree, valid_powers, epsilon, alpha = 2):
 
 
 def J(omega: np.ndarray) -> float:
-    """Return J = Σ_i ω_i."""
+    """Return Energy or Angular momentum"""
     return float(np.sum(omega))
 
-# def grad_f(theta: np.ndarray, Func, degree_potential,valid_powers_potential, epsilon, h: float = 1.0e-6) -> np.ndarray:
-#     """
-#     Numerical gradient ∇f using leapfrog
-#     Args
-#     ----
-#     theta : (3,) ndarray  – current angles
-#     F     : callable      – user-supplied f(θ)  (scalar)
-#     h     : float         – stepsize for the finite difference
 
-#     Returns
-#     -------
-#     ∇f (3,) ndarray
-#     """
-#     grad = np.zeros_like(theta, dtype=float)
-#     for j in range(theta.size):
-#         forward = theta.copy(); forward[j] += h
-#         backward = theta.copy(); backward[j] -= h
-#         grad[j] = (Func(forward, degree_potential,valid_powers_potential, epsilon) - 2* Func(theta, degree_potential,valid_powers_potential, epsilon) + Func(backward, degree_potential,valid_powers_potential, epsilon)) / (2.0 * h)
-#     return grad
 
-def grad_f(thetas, degree, valid_powers, epsilon, alpha = 2):
+def grad_f(thetas, omega, degree, valid_powers, epsilon, alpha = 2):
+    '''
+    Return force field (epsilon non symmetric or epsilon non conservative)
+    '''
     valid_powers = np.array(valid_powers)
     ck = rng[:len(valid_powers)] * np.exp(-alpha * np.linalg.norm(valid_powers, axis=1))
     phase = valid_powers @ thetas  # shape: (|K|,) because (|K|,3) @ (3,) => (|K|,)
     complex_exps = np.exp(1j * phase)  # shape (|K|,)
-    return np.array([np.sum(ck * complex_exps * valid_powers[:, 0]*1j).real - epsilon*np.sin(thetas[0])*np.cos(thetas[1])*np.cos(thetas[2]),
-            np.sum(ck * complex_exps * valid_powers[:, 1]*1j).real - epsilon*np.cos(thetas[0])*np.sin(thetas[1])*np.cos(thetas[2]),
-            np.sum(ck * complex_exps * valid_powers[:, 2]*1j).real - epsilon*np.cos(thetas[0])*np.cos(thetas[1])*np.sin(thetas[2])])
+    return np.array([np.sum(ck * complex_exps * valid_powers[:, 0]*1j).real + epsilon*np.sin(thetas[0])*np.cos(thetas[1])*np.cos(thetas[2]),# epsilon*thetas[1]*thetas[2],#   #  #epsilon*(np.cos(thetas[0])) epsilon*np.sin(thetas[0])*np.cos(thetas[1])*np.cos(thetas[2]),
+            np.sum(ck * complex_exps * valid_powers[:, 1]*1j).real + epsilon*np.cos(thetas[0])*np.sin(thetas[1])*np.cos(thetas[2]),#   epsilon*thetas[0]*thetas[2], #  #epsilon*np.cos(thetas[0])*np.sin(thetas[1])*np.cos(thetas[2]),
+            np.sum(ck * complex_exps * valid_powers[:, 2]*1j).real + epsilon*np.cos(thetas[0])*np.cos(thetas[1])*np.sin(thetas[2])]) # epsilon*thetas[0]*thetas[1]]) #epsilon*np.cos(thetas[0])*np.cos(thetas[1])*np.sin(thetas[2])]) #  #epsilon*np.cos(thetas[0])*np.cos(thetas[1])*np.sin(thetas[2])])
+
 
 
 
@@ -1135,6 +792,90 @@ def verlet_integrate(theta0: np.ndarray,
     return J_series
 
 
+def baoab_integrate(theta0: np.ndarray,
+                    omega0: np.ndarray,
+                    dt: float,
+                    n_steps: int,
+                    valid_powers_potential,
+                    degree_potential,
+                    epsilon,
+                    temperature: float,
+                    gamma: float,
+                    threshold: float,
+                    rng=None):
+    """
+    Integrate Langevin dynamics with a BAOAB scheme:
+        dtheta = omega dt
+        domega = -grad_f(theta, omega, ...) dt - gamma*omega dt
+                 + sqrt(2*gamma*T) dW
+
+    Assumes unit inertia/mass and k_B = 1.
+
+    Parameters
+    ----------
+    theta0, omega0 : (3,) ndarray
+        Initial angle and angular velocity.
+    dt : float
+        Time step.
+    n_steps : int
+        Number of steps.
+    temperature : float
+        Thermostat temperature T.
+    gamma : float
+        Friction coefficient.
+    rng : np.random.Generator, optional
+        Random number generator.
+
+    Returns
+    -------
+    J_series : (n_steps+1,) ndarray
+        Total energy-like observable:
+            0.5 * J(omega) + F(theta, ...)
+        saved at each step.
+    theta, omega : ndarray, ndarray
+        Final state.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    theta = theta0.astype(float).copy()
+    omega = omega0.astype(float).copy()
+
+    J_series = np.empty(n_steps + 1)
+    J_series[0] = 0.5 * J(omega) # + F(theta, degree_potential, valid_powers_potential)
+
+    # OU coefficients for the O-step
+    c1 = np.exp(-gamma * dt)
+    c2 = np.sqrt(temperature * (1.0 - c1**2))
+    count =0
+    while count <= n_steps-1: # np.abs(J_series[count])<= threshold and count <= n_steps-1:
+        if count % 10000 == 0:
+            print(count)
+        # B: half kick
+        a = -grad_f(theta, omega, degree_potential, valid_powers_potential, epsilon)
+        omega += 0.5 * dt * a
+
+        # A: half drift
+        theta += 0.5 * dt * omega
+
+        # O: thermostat
+        omega = c1 * omega + c2 * rng.standard_normal(size=omega.shape)  
+        #noise = rng.standard_normal(size=(2,))
+        #omega = omega + c2 * np.array([noise[0], noise[1], -noise[0]-noise[1]])
+        # A: half drift
+        theta += 0.5 * dt * omega
+
+        # B: half kick
+        a = -grad_f(theta, omega, degree_potential, valid_powers_potential, epsilon)
+        omega += 0.5 * dt * a
+
+        # Save observable
+        J_series[count+1] = J(omega) #+ F(theta, degree_potential, valid_powers_potential)
+        count += 1
+    return J_series, theta, omega, count
+
+
+
 
 def hitting_time(theta0: np.ndarray,
                      omega0: np.ndarray,
@@ -1183,8 +924,22 @@ def hitting_time(theta0: np.ndarray,
         J_series[n] = J(omega)
     return n
 
+def moving_average_previous_100000(x):
+    x = np.asarray(x, dtype=float)
+    window = 100000
 
-if __name__ != "__main__":
+    if len(x) < window:
+        return np.array([])
+
+    cumsum = np.cumsum(np.insert(x, 0, 0.0))
+
+    # averages of:
+    # x[0:100000], x[1:100001], x[2:100002], ...
+    ma = (cumsum[window:] - cumsum[:-window]) / window
+
+    return ma
+
+if __name__ == "__main__":
     # plt.title("Approximate conservation of Angular momentum ")
     # plt.xlabel("||f-sym f||")
     # plt.ylabel("Deviation in Angular Momentum")
@@ -1192,68 +947,155 @@ if __name__ != "__main__":
     valid_powers_potential = [k for k in product(range(-degree_potential, degree_potential + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree_potential and sum(ki for ki in k)==0]
     theta0 = np.array([2.10, 0.20, -1.15])
     omega0 = np.array([-0.5, 0.25, 0.25])
-    dt      = 5e-2          
+    dt      = 1e-2        
     test_points = points_circle(100)
     # J_t_unperturbed = verlet_integrate(theta0, omega0, F_perturbed, dt, n_steps, valid_powers_potential, degree_potential, 0)
     psyms = []
-    hitting_times2 = []
-    F_unperturbed = np.apply_along_axis(F, 1, test_points, degree_potential, valid_powers_potential)
 
+    for threshold in [0]: #['const', 'linear', 'sqrt']:
+        print(f'{threshold}')
+        hitting_times = []
+    # F_unperturbed = np.apply_along_axis(F, 1, test_points, degree_potential, valid_powers_potential)
 
-    for eps in [5e-2, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6]:
-
-
-        print('NEW')
-        F_p = np.apply_along_axis(F_perturbed, 1, test_points, degree_potential, valid_powers_potential, eps)
-        sym = []
-        for thetas in test_points:
-            sym.append(psym_perturbed(thetas, degree_potential, valid_powers_potential, alpha = 2, epsilon= eps))
+        for eps in [1e-2, 1e-3, 1e-4,1e-5]:
+            # if threshold == 'const':
+            #    tol = 0.01
+            # elif threshold == 'sqrt':
+            #    tol = 10*np.sqrt(eps)
+            # elif threshold == 'linear':
+            #    tol = 10*eps
+            n_steps = 10000000
+        # F_p = np.apply_along_axis(F_perturbed, 1, test_points, degree_potential, valid_powers_potential, eps)
+        # for thetas in test_points:
+            # sym.append(psym_perturbed(thetas, degree_potential, valid_powers_potential, alpha = 2, epsilon= eps))
         # psym = np.sqrt(1/(2*np.pi*100))*np.linalg.norm(F_p-np.array(sym))
         # psyms.append(np.linalg.norm(F_p-np.array(sym)))
-        hitting_times2.append(hitting_time(theta0, omega0, dt, 0.01, valid_powers_potential, degree_potential, eps))
+           # n, Jv = hitting_time(theta0, omega0, dt, tol, valid_powers_potential, degree_potential, eps)
+           # hitting_times.append(n)
+        # hitting_time_NC0.append(n)
+            J_series, theta, omega, HT = baoab_integrate(theta0, omega0, dt, n_steps, valid_powers_potential, degree_potential, eps, 1e-8, 0.1*1, 0)
+            np.save(f'/Users/hk/Desktop/Python_try/Baoab/10m_{eps}_symbath_verycold.npy', J_series)
 
+            #ma = moving_average_previous_100000(J_series)
+            #np.save(f'/Users/hk/Desktop/Python_try/Baoab/10m_{eps}_nc_ma', ma)
+
+    #  np.save(f'C://Users//zziyu//OneDrive - University of Toronto//Desktop//RAMathUBC//RAMathUBC//ApproxJ2d/NCHT_sqrt.npy', hitting_time_NC0)
+        # if eps <1e-2:
+        #     hitting_times1.append(hitting_time(theta0, omega0, dt, 100*psym, valid_powers_potential, degree_potential, eps))
+        #    hitting_times.append(HT)
+            # if threshold == 'const':
+            #    Jv = verlet_integrate(theta0, omega0, dt, n_steps, valid_powers_potential, degree_potential, eps)
+            #    np.save(f'C://Users//zziyu//OneDrive - University of Toronto//Desktop//RAMathUBC//RAMathUBC//ApproxJ2d/J_{eps}.npy', Jv)
+        # J_series[J_series>10]=0
+        # np.save(f'C://Users//zziyu//OneDrive - University of Toronto//Desktop//RAMathUBC//RAMathUBC//ApproxJ2d/NCHT_{threshold}.npy', Jv)
 
     
+ #    plt.figure()
+ #    fig, ax = plt.subplots()
+    
+ #    ax.plot([1e-2, 1e-3, 1e-4,1e-5, 1e-6,1e-7], np.load('C://Users//zziyu//OneDrive - University of Toronto//Desktop//RAMathUBC//RAMathUBC//ApproxJ2d/NCHT_const.npy'), marker='o', label = 'HT : 0.01'
+ # )
+ #    ax.plot([1e-2, 1e-3, 1e-4,1e-5, 1e-6,1e-7], np.load('C://Users//zziyu//OneDrive - University of Toronto//Desktop//RAMathUBC//RAMathUBC//ApproxJ2d/NCHT_sqrt.npy'), marker='o', label = 'HT : 10sqrtε')
+ #    ax.plot([1e-2, 1e-3, 1e-4,1e-5, 1e-6,1e-7], np.load('C://Users//zziyu//OneDrive - University of Toronto//Desktop//RAMathUBC//RAMathUBC//ApproxJ2d/NCHT_linear.npy'), marker='o', label = 'HT : 10ε')
 
+ #    plt.yscale('log')
+ #    plt.xscale('log')    
+ #    ax.set_xlabel(r'ε')
+ #    ax.set_ylabel(r'Hitting Time')
+ #    plt.legend()
+ #    plt.show()
+ #    plt.savefig("C://Users//zziyu//Downloads//hitting_times_NC.png")
+ #    plt.figure()
+    fig, ax = plt.subplots()
+    for eps in  [1e-2, 1e-3, 1e-4, 1e-5]:
+        J_series = np.load(f'/Users/hk/Desktop/Python_try/Baoab/10m_{eps}_symbath_verycold.npy')
+        #J_series[J_series>10]=10
+        J_series = np.abs(J_series-J_series[0])
+        #print(J_series[:10])
+        running_max = np.maximum.accumulate(J_series)
+        running_min = np.minimum.accumulate(J_series)
+        max_spread = np.abs(running_max - running_min)
+        # J_series[np.isnan(J_series)] = 0
+        ax.plot(np.arange(J_series.shape[0]), max_spread, label = f'ε={eps}')
+    ax.set_xlabel(r'Timestep')
+    ax.set_ylabel(r'Maximal Deviation')
+    #ax.set_ylim(-0.5,0.5)
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    plt.legend(loc='lower right')
+    plt.savefig(f'/Users/hk/Desktop/Python_try/Baoab/10m_symbath_verycold.png')
 
-
-
-
-if __name__ != "__main__":
-    # plt.title("Approximate conservation of Angular momentum ")
-    # plt.xlabel("||f-sym f||")
-    # plt.ylabel("Deviation in Angular Momentum")
-    degree_potential = 10
-    valid_powers_potential = [k for k in product(range(-degree_potential, degree_potential + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree_potential and sum(ki for ki in k)==0]
-    theta0 = np.array([2.10, 0.20, -1.15])
-    omega0 = np.array([-0.5, 0.25, 0.25])
-    dt      = 1e-2          
-    n_steps = 1000000      
-    test_points = points_circle(100)
-    # J_t_unperturbed = verlet_integrate(theta0, omega0, F_perturbed, dt, n_steps, valid_powers_potential, degree_potential, 0)
-    psyms = []
-    deviation = []
-    F_unperturbed = np.apply_along_axis(F, 1, test_points, degree_potential, valid_powers_potential)
-    for eps in [3e-3]:
-        plt.figure()
-        F_p = np.apply_along_axis(F_perturbed, 1, test_points, degree_potential, valid_powers_potential, eps)
-        sym = []
-        for thetas in test_points:
-            sym.append(psym_perturbed(thetas, degree_potential, valid_powers_potential, alpha = 2, epsilon= eps))
-        psym = np.sqrt(1/(2*np.pi*100))*np.linalg.norm(F_p-np.array(sym))
-        psyms.append(np.linalg.norm(F_p-np.array(sym)))
-        J_t_eps = verlet_integrate(theta0, omega0, dt, n_steps, valid_powers_potential, degree_potential, eps)
-        plt.ylabel('Total Angular Momentum')
-        plt.xlabel('Nb of onesteps')
-        plt.axvline(x=round(1/psym/(dt)), color='black', linestyle='--', linewidth=2, label=f"1/||f-symf||")
-        plt.plot([i for i in range(n_steps+1)], J_t_eps, label=f"||f-sym(f)||={psym:.2e}")
-        plt.legend(loc='upper right')
-        plt.show()
-        # np.save(f"C://Users//zziyu//Desktop//RAMathUBC//ZZY//RAMathUBC//2dJteps{eps}.npy", J_t_eps)
-        # deviation.append(np.max(J_t_unperturbed-J_t_eps))
-    # plt.loglog(psyms, deviation, marker='o')
+    plt.show()
+    # mean = np.abs(np.cumsum(J_series) / np.arange(1, len(J_series) + 1))
+    # plt.figure()
+    # fig, ax = plt.subplots()
+    # ax.set_xlabel('timestep')
+    # ax.set_ylabel('Total Angular_Momentum')
+    # ax.plot([i for i in range(1000001)], mean, label=f'cum average')
+    # plt.yscale('log')
+    # plt.xscale('log')
+    # plt.legend()
     # plt.show()
 
+
+# hitting_times0 = np.load("C://Users//zziyu//OneDrive - University of Toronto//Desktop//RAMathUBC//RAMathUBC//ApproxJ2d//NCHT_1.npy")
+# hitting_times1 = np.load("C://Users//zziyu//OneDrive - University of Toronto//Desktop//RAMathUBC//RAMathUBC//ApproxJ2d//NCHT_eps.npy")
+# # # psyms = np.load("C://Users//zziyu//OneDrive - University of Toronto//Desktop//RAMathUBC//RAMathUBC//ApproxJ2d//psyms.npy")
+
+# plt.figure()
+# fig, ax = plt.subplots()
+
+# ax.set_ylabel(r'Hitting Time')
+# # ax.set_xlabel(r'$\epsilon_{sym}=||f-\mathrm{sym}\, f||_{L^2}$')
+# ax.set_xlabel(r'$\epsilon$')
+
+# ax.set_xscale('log')
+# ax.set_yscale('log')
+
+# # Your data curve
+# l1, = ax.plot([5e-2, 1e-2, 1e-3, 1e-4, 1e-5], hitting_times1, marker='o',
+#           # label=r"HT $\|f-\mathrm{sym}\,f\|^{1/2}$")
+#           label=r"HT $\epsilon$")
+# l2, = ax.plot([5e-2, 1e-2, 1e-3, 1e-4, 1e-5], hitting_time_NC0, marker='o',
+#           label=r"HT $\epsilon^{-1/2}$")
+# l3, = ax.plot([5e-2, 1e-2, 1e-3, 1e-4, 1e-5], hitting_times0, marker='o',
+#           label=r"HT 1")
+# plt.legend(loc='lower left')
+
+# # # # Reference curve
+# x_ref = np.logspace(-4, -3, 1000)
+# y_ref = 40 * x_ref**(-1/2)
+# l4, = ax.plot(x_ref, y_ref, linestyle="--", label=r'$\sim \epsilon_{\mathrm{sym}}^{-1/2}$')
+
+# # Place the labels on relatively clean spots
+# x_for_l4 = 5e-4                            # anywhere clear on the reference line
+
+
+# label_line(ax, l4, x_for_l4, s=r'$\sim \epsilon_{\mathrm{sym}}^{-1/2}$')
+
+# x_ref2 = np.logspace(-4,-2, 1000)
+# y_ref2 = 5 * x_ref2**(-1)
+# x_for_l5 = 5e-4
+
+
+
+# l5, = ax.plot(x_ref2, y_ref2, linestyle="--", label=r'$\sim \epsilon^{-1}$')
+# label_line(ax, l5, x_for_l5, s=r'$\sim \epsilon^{-1}$')
+
+
+
+# # Optional: remove legend since labels are inline
+# ax.legend().remove()
+# l4.set_label("_nolegend_")
+# l5.set_label("_nolegend_")
+
+# plt.legend(loc='lower left')
+# plt.tight_layout()
+# plt.show()
+
+
+
+
 if __name__ != "__main__":
     # plt.title("Approximate conservation of Angular momentum ")
     # plt.xlabel("||f-sym f||")
@@ -1262,39 +1104,6 @@ if __name__ != "__main__":
     valid_powers_potential = [k for k in product(range(-degree_potential, degree_potential + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree_potential and sum(ki for ki in k)==0]
     theta0 = np.array([2.10, 0.20, -1.15])
     omega0 = np.array([-0.5, 0.25, 0.25])
-    dt      = 1e-2          
-    n_steps = 100000      
-    test_points = points_circle(100)
-    # J_t_unperturbed = verlet_integrate(theta0, omega0, F_perturbed, dt, n_steps, valid_powers_potential, degree_potential, 0)
-    psyms = []
-    deviation = []
-    F_unperturbed = np.apply_along_axis(F, 1, test_points, degree_potential, valid_powers_potential)
-    plt.figure()
-    for eps in [1e-2, 1e-3]:
-        F_p = np.apply_along_axis(F_perturbed, 1, test_points, degree_potential, valid_powers_potential, eps)
-        sym = []
-        for thetas in test_points:
-            sym.append(psym_perturbed(thetas, degree_potential, valid_powers_potential, alpha = 2, epsilon= eps))
-        psym = np.sqrt(1/(2*np.pi*100))*np.linalg.norm(F_p-np.array(sym))
-        psyms.append(np.linalg.norm(F_p-np.array(sym)))
-        J_t_eps = verlet_integrate(theta0, omega0, dt, n_steps, valid_powers_potential, degree_potential, eps)
-        deviation.append(np.max(np.abs(J_t_eps)))
-    plt.ylabel('Max(J)')
-    plt.xscale("log")
-    plt.yscale("log")
-
-    plt.xlabel('||f-sym f||')
-    plt.plot(psyms, deviation, marker="o",label=f"Maximal deviation in Angular Momentum (Stable Regime), dt=0.01")
-    plt.legend(loc='upper right')
-    plt.show()
-    
-    
-if __name__ != "__main__":
-    # plt.title("Approximate conservation of Angular momentum ")
-    # plt.xlabel("||f-sym f||")
-    # plt.ylabel("Deviation in Angular Momentum")
-    degree_potential = 10
-    valid_powers_potential = [k for k in product(range(-degree_potential, degree_potential + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree_potential and sum(ki for ki in k)==0]
     dt      = 5e-2          
     n_steps = 10000000      
     test_points = points_circle(100)
@@ -1303,76 +1112,31 @@ if __name__ != "__main__":
     deviation = []
     F_unperturbed = np.apply_along_axis(F, 1, test_points, degree_potential, valid_powers_potential)
     plt.figure()
-    plt.ylabel('Total Angular Momentum')
-    plt.xlabel('Nb of onesteps')
-    for i in range(1):
-        theta0 = points_circle(1)[0]
-        omega0 = np.random.uniform(-1,1, 2)
-        omega0 = np.append(omega0, -omega0[0]-omega0[1])
-        for c,eps in enumerate([1e-2]):
-            if c == 0:
-                colour = 'blue'
-            elif c == 1:
-                colour = 'red'
-            elif c ==2:
-                colour = 'green'
-            elif c ==3:
-                colour = 'yellow'
-            elif c == 4:
-                colour = 'orange'
-
-            F_p = np.apply_along_axis(F_perturbed, 1, test_points, degree_potential, valid_powers_potential, eps)
-            sym = []
-            for thetas in test_points:
-                sym.append(psym_perturbed(thetas, degree_potential, valid_powers_potential, alpha = 2, epsilon= eps))
-            psym = np.sqrt(1/(2*np.pi*100))*np.linalg.norm(F_p-np.array(sym))
-            psyms.insert(1,np.linalg.norm(F_p-np.array(sym)))
-            J_t_eps = verlet_integrate(theta0, omega0, dt, n_steps, valid_powers_potential, degree_potential, eps)
-            np.save(f'C://Users//zziyu\Desktop//RAMathUBC//ZZY//RAMathUBC//ApproxJ2d//J{eps}_{dt}_{i}.npy', J_t_eps)
-            if i == 0:
-                plt.plot([i for i in range(n_steps+1)], J_t_eps, color = colour, label=f"||f-sym(f)||={psym:.2e}")
-            else:
-                plt.plot([i for i in range(n_steps+1)], J_t_eps, color = colour, label='_nolegend_')
-    plt.legend(loc='upper right')
+    plt.ylabel(r'Drift in Angular Momentum')
+    plt.xlabel(r'Nb of onesteps')
+    a=0
+    colors = ['tab:blue', 'tab:red', 'tab:green', 'tab:orange']
+    for eps in [5e-2, 1e-2, 1e-3, 1e-4]:
+        F_p = np.apply_along_axis(F_perturbed, 1, test_points, degree_potential, valid_powers_potential, eps)
+        sym = []
+        for thetas in test_points:
+            sym.append(psym_perturbed(thetas, degree_potential, valid_powers_potential, alpha = 2, epsilon= eps))
+        psym = np.sqrt(1/(((2*np.pi)**3)*100))*np.linalg.norm(F_p-np.array(sym))
+        psyms.append(np.linalg.norm(F_p-np.array(sym)))
+        J_t_eps = verlet_integrate(theta0, omega0, dt, n_steps, valid_powers_potential, degree_potential, eps)
+        np.save(f'C://Users//zziyu//OneDrive - University of Toronto//Desktop//RAMathUBC//RAMathUBC//2dJteps{a}.npy', J_t_eps)
+        above = J_t_eps > 0.2
+        t0 = np.argmax(above)
+        plt.plot([i for i in range(t0)], J_t_eps[:t0], label=f"||f-sym(f)||={psym:.2e}", color = colors[a])
+        plt.plot([i for i in range(t0, n_steps+1)], J_t_eps[t0:], color = colors[a], alpha = 0.2)
+        a+=1
+    plt.legend(loc=r'upper right')
     plt.show()
-    
-    
-# fig = plt.figure()
-# plt.ylabel('Total Angular Momentum')
-# plt.xlabel('Nb of onesteps')
-# i=0
-# n_steps = 10000000      
-# psyms= [2.32e-1,4.63e-2, 4.63e-3, 4.63e-4]
-# for c,eps in enumerate([5e-2,1e-2, 1e-3, 1e-4]):
-#     J_t_eps = np.load(f'C://Users//zziyu\Desktop//RAMathUBC//ZZY//RAMathUBC//ApproxJ2d//J{eps}_{dt}_{i}.npy')
-#     psym = psyms[c]
-
-#     if c == 0:
-#         colour = 'blue'
-#         plt.plot([i for i in range(n_steps+1)], J_t_eps, color = colour, label=f"||f-sym(f)||={psym:.2e}", alpha=0.2)
-
-#     elif c == 1:
-#         colour = 'red'
-#         plt.plot([i for i in range(2000000)], J_t_eps[:2000000], color = colour, label=f"||f-sym(f)||={psym:.2e}")
-#         plt.plot([i for i in range(2000000, n_steps+1)], J_t_eps[2000000:], color = colour, label=f"__nolabel__", alpha = 0.2)
-#     elif c ==2:
-#         colour = 'green'
-#         plt.plot([i for i in range(n_steps+1)], J_t_eps, color = colour, label=f"||f-sym(f)||={psym:.2e}")
-
-#     elif c ==3:
-#         colour = 'yellow'
-#         plt.plot([i for i in range(n_steps+1)], J_t_eps, color = colour, label=f"||f-sym(f)||={psym:.2e}")
-
-#     elif c == 4:
-#         colour = 'orange'
-
-# plt.legend(loc='lower right')
-# plt.show()
-    
         # np.save(f"C://Users//zziyu//Desktop//RAMathUBC//ZZY//RAMathUBC//2dJteps{eps}.npy", J_t_eps)
         # deviation.append(np.max(J_t_unperturbed-J_t_eps))
     # plt.loglog(psyms, deviation, marker='o')
     # plt.show()
+
 if __name__ != "__main__":
     # plt.title("Approximate conservation of Angular momentum ")
     # plt.xlabel("||f-sym f||")
@@ -1381,23 +1145,28 @@ if __name__ != "__main__":
     valid_powers_potential = [k for k in product(range(-degree_potential, degree_potential + 1), repeat=3) if sum(abs(ki) for ki in k) <= degree_potential and sum(ki for ki in k)==0]
     theta0 = np.array([2.10, 0.20, -1.15])
     omega0 = np.array([-0.5, 0.25, 0.25])
-    dt      = 5e-2          
+    dt      = 5e-3         
+    n_steps = 200000      
     test_points = points_circle(100)
     # J_t_unperturbed = verlet_integrate(theta0, omega0, F_perturbed, dt, n_steps, valid_powers_potential, degree_potential, 0)
     psyms = []
-    hitting_times = []
-    plt.figure()
+    deviation = []
     F_unperturbed = np.apply_along_axis(F, 1, test_points, degree_potential, valid_powers_potential)
-    for eps in [5e-2, 1e-3, 1e-4]:
+    plt.figure()
+    for eps in [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]:
         F_p = np.apply_along_axis(F_perturbed, 1, test_points, degree_potential, valid_powers_potential, eps)
         sym = []
         for thetas in test_points:
             sym.append(psym_perturbed(thetas, degree_potential, valid_powers_potential, alpha = 2, epsilon= eps))
-        psym = np.sqrt(1/(2*np.pi*100))*np.linalg.norm(F_p-np.array(sym))
+        psym = np.sqrt(1/(2*np.pi*10))*np.linalg.norm(F_p-np.array(sym))
         psyms.append(np.linalg.norm(F_p-np.array(sym)))
-        hitting_times.append(hitting_time(theta0, omega0, dt, np.sqrt(psym), valid_powers_potential, degree_potential, eps))
-        plt.ylabel('Total Angular Momentum')
-        plt.xlabel('Nb of onesteps')
-        plt.plot(psyms, hitting_times, label=f"||f-sym(f)||={psym:.2e}")
-        plt.legend(loc='upper right')
-        plt.show()
+        J_t_eps = verlet_integrate(theta0, omega0, dt, n_steps, valid_powers_potential, degree_potential, eps)
+        deviation.append(np.max(np.abs(J_t_eps)))
+    plt.ylabel('Max(J)')
+    plt.xscale("log")
+    plt.yscale("log")
+
+    plt.xlabel('||f-sym f||')
+    plt.plot(psyms, deviation, marker="o",label=f"Maximal deviation in Angular Momentum (Stable Regime), dt=0.005")
+    plt.legend(loc='upper right')
+    plt.show()
